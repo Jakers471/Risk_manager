@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+        cache-dependency-glob: "**/pyproject.toml"
+
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        uv sync --all-extras --dev
+
+    - name: Run tests
+      run: |
+        uv run pytest tests/ -v --cov=project_x_py --cov-report=xml --ignore=tests/benchmarks/
+
+    - name: Upload coverage
+      uses: codecov/codecov-action@v4
+      if: always()  # Always run coverage upload even if tests fail
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false  # Don't fail if codecov is down
+        token: ${{ secrets.CODECOV_TOKEN }}  # Required for public repos
+        verbose: true  # Optional: for debugging
+        name: codecov-${{ matrix.python-version }}  # Optional: name per Python version
+
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: uv sync --all-extras --dev
+
+    - name: Run ruff on source code
+      run: |
+        uv run ruff check src/
+        uv run ruff format --check src/
+
+    - name: Run mypy
+      run: |
+        uv run mypy src/ --exclude src/project_x_py/utils/lock_benchmarker.py
+
+    - name: Check async compliance
+      run: |
+        uv run python scripts/check_async.py src/project_x_py/**/*.py
+
+  security:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: uv sync --all-extras --dev
+
+    - name: Run bandit
+      run: |
+        uv run bandit -r src/ -ll -f json -o bandit-report.json || true
+
+    - name: Run safety check
+      run: |
+        uv run safety check --json || true
+
+    - name: Run pip-audit
+      run: |
+        uv run pip-audit || true
+
+    - name: Upload security reports
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: security-reports
+        path: |
+          bandit-report.json
+
+  performance:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+
+    - name: Set up Python
+      run: uv python install 3.12
+
+    - name: Install dependencies
+      run: uv sync --all-extras --dev
+
+    - name: Run benchmarks
+      run: |
+        uv run pytest tests/benchmarks/ --benchmark-json=benchmark.json
+
+    - name: Compare benchmarks
+      run: |
+        # Compare with main branch if exists
+        set -e  # Exit on error
+
+        # Store current branch name
+        CURRENT_BRANCH=$(git branch --show-current)
+        echo "Current branch: $CURRENT_BRANCH"
+
+        # Reset any changes to uv.lock that may have occurred during dependency installation
+        git reset --hard HEAD
+        git clean -fd
+
+        # Try to checkout main branch for baseline
+        if git checkout main 2>/dev/null; then
+          echo "Successfully checked out main branch"
+          # Install dependencies and run baseline benchmarks on main branch
+          uv sync --all-extras --dev
+          uv run pytest tests/benchmarks/ --benchmark-json=/tmp/baseline.json || {
+            echo "Baseline benchmark failed, continuing without comparison"
+            rm -f /tmp/baseline.json
+          }
+        else
+          echo "Could not checkout main branch, skipping baseline comparison"
+        fi
+
+        # Reset and return to our branch
+        git reset --hard HEAD
+        git clean -fd
+        git checkout "$CURRENT_BRANCH" || git checkout -
+        echo "Returned to branch: $(git branch --show-current)"
+
+        # Re-install our branch dependencies
+        uv sync --all-extras --dev
+        # Only run comparison if baseline exists
+        if [ -f /tmp/baseline.json ]; then
+          echo "Running benchmark comparison with baseline"
+          uv run pytest tests/benchmarks/ --benchmark-compare=/tmp/baseline.json --benchmark-compare-fail=min:20% || {
+            echo "Performance regression detected, but continuing..."
+            echo "Baseline comparison failed - running basic benchmarks"
+            uv run pytest tests/benchmarks/
+          }
+        else
+          echo "Baseline benchmark not available, skipping comparison"
+          uv run pytest tests/benchmarks/
+        fi
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: benchmark.json
