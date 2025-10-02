@@ -1,0 +1,18 @@
+{
+  "dry_run": false,
+  "log_level": "INFO",
+  "symbols": [
+    "MNQ"
+  ],
+  "rules": {
+    "max_contracts": {
+      "enabled": true,
+      "severity": "high",
+      "description": "Restricts maximum contracts per position",
+      "parameters": {
+        "max_contracts": 4,
+        "enforcement": "flatten"
+      }
+    }
+  }
+}

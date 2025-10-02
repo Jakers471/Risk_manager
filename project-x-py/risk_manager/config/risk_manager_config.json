@@ -1,0 +1,26 @@
+{
+  "dry_run": true,
+  "log_level": "INFO",
+  "symbols": [
+    "MNQ"
+  ],
+  "rules": {
+    "max_contracts": {
+      "enabled": true,
+      "severity": "high",
+      "description": "Restricts maximum contracts per position",
+      "parameters": {
+        "max_contracts": 4,
+        "enforcement": "flatten"
+      }
+    },
+    "daily_loss": {
+      "enabled": true,
+      "severity": "high",
+      "description": "Stops trading after daily loss limit is breached",
+      "parameters": {
+        "max_usd": 200
+      }
+    }
+  }
+}
